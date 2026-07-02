@@ -21,8 +21,10 @@ from src.viz import (
     plot_feature_test_table,
 )
 
-st.set_page_config(page_title="Breaking Fraud", layout="wide")
+from src.styles import CUSTOM_CSS
 
+st.set_page_config(page_title="Breaking Fraud", layout="wide")
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 @st.cache_resource
 def load_and_train():
@@ -56,6 +58,13 @@ def compute_shap(_model, model_name, X_sample):
     return explainer, shap_values
 
 
+@st.cache_data
+def get_optimal_threshold(model_name, y_proba_hash, fn_cost, fp_cost, _y_test, _y_proba):
+    # model_name + fn_cost + fp_cost + y_proba_hash form the cache key;
+    # the underscore-prefixed args are excluded from hashing but still used inside
+    return find_optimal_threshold(_y_test, _y_proba, fn_cost=fn_cost, fp_cost=fp_cost)
+
+
 data = load_and_train()
 
 st.title("Breaking Fraud")
@@ -87,6 +96,18 @@ f1 = f1_score(data["y_test"], y_pred)
 cm = confusion_matrix(data["y_test"], y_pred)
 tn, fp, fn, tp = cm.ravel()
 
+# --- Shared sample + SHAP, built once, used by both Feature Insights and Explain Transaction ---
+X_test = data["X_test"]
+y_test = data["y_test"]
+
+fraud_rows = X_test[y_test == 1]
+legit_sample = X_test[y_test == 0].sample(min(900, len(X_test)), random_state=42)
+X_sample = pd.concat([fraud_rows, legit_sample])
+y_sample = y_test.loc[X_sample.index]
+
+explainer, shap_values = compute_shap(model, model_choice, X_sample)
+shap_fraud = shap_values[:, :, 1] if np.ndim(shap_values) == 3 else shap_values
+
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
     ["Overview", "Cost analysis", "Feature insights", "Explain transaction", "Live feed"]
 )
@@ -107,8 +128,9 @@ with tab1:
 
 # ============= TAB 2: COST ANALYSIS =============
 with tab2:
-    best_threshold, best_cost, thresholds, costs = find_optimal_threshold(
-        data["y_test"], y_proba, fn_cost=fn_cost, fp_cost=fp_cost
+    y_proba_hash = hash(y_proba.tobytes())
+    best_threshold, best_cost, thresholds, costs = get_optimal_threshold(
+        model_choice, y_proba_hash, fn_cost, fp_cost, data["y_test"], y_proba
     )
     current_cost = (fn * fn_cost) + (fp * fp_cost)
 
@@ -133,16 +155,6 @@ with tab2:
 with tab3:
     left, right = st.columns(2)
 
-    X_test = data["X_test"]
-    y_test = data["y_test"]
-
-    fraud_rows = X_test[y_test == 1]
-    legit_sample = X_test[y_test == 0].sample(min(900, len(X_test)), random_state=42)
-    X_sample = pd.concat([fraud_rows, legit_sample])
-
-    explainer, shap_values = compute_shap(model, model_choice, X_sample)
-    shap_fraud = shap_values[:, :, 1] if np.ndim(shap_values) == 3 else shap_values
-
     with left:
         st.plotly_chart(
             plot_shap_importance(shap_fraud, X_sample.columns.tolist()),
@@ -161,7 +173,6 @@ with tab3:
 
 # ============= TAB 4: EXPLAIN TRANSACTION =============
 with tab4:
-    y_sample = y_test.loc[X_sample.index]
     fraud_positions = np.where(y_sample.values == 1)[0]
 
     if len(fraud_positions) == 0:
