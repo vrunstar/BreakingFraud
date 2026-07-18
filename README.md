@@ -1,113 +1,71 @@
-# Breaking Fraud — Credit Card Fraud Detection
+# Breaking Fraud
 
-An end-to-end fraud detection pipeline covering SQL, statistical hypothesis testing, imbalanced classification, cost-based decision thresholds, and model explainability — packaged into an interactive Streamlit dashboard.
+A cost-aware, explainable credit card fraud detection system — built as a case study on the [IEEE-CIS Fraud Detection dataset](https://www.kaggle.com/competitions/ieee-fraud-detection), with a companion Streamlit dashboard and a business-facing PDF report.
 
-**[Live Dashboard →](#)** *(add your deployed Render/Streamlit Cloud link here)*
+## What this is
 
----
+Most fraud-detection demos stop at "here's a model with 95% accuracy." This project goes further: it deliberately restricts modeling to features that are **deployable** (computable on a live incoming transaction) and **interpretable** (explainable to a non-technical stakeholder or auditor) — excluding the dataset's large block of anonymized, undocumented engineered features that can't be reproduced outside Kaggle's competition environment.
 
-## Overview
+It then compares 5 models, tunes the decision threshold against real business cost tradeoffs (missed fraud vs. false alarms), and explains every prediction with SHAP.
 
-Credit card fraud is a classic — and genuinely hard — imbalanced classification problem: only 0.17% of transactions in this dataset are fraudulent. This project doesn't just train a model on it; it walks the full analytical process a fraud/risk analyst would actually go through:
+## Key findings
 
-1. Prove features are statistically meaningful before modeling
-2. Compare imbalance-handling strategies (SMOTE vs class weighting) across two model types
-3. Move past a default 0.5 threshold to one chosen by real business cost tradeoffs
-4. Explain individual model decisions with SHAP, not just report a black-box score
+- **XGBoost (class-weighted)** was the lowest-cost model across three different cost scenarios tested — not just the highest-accuracy model on paper.
+- The optimal decision threshold is **never** the default 0.5, and shifts predictably as the relative cost of false alarms changes.
+- One counterintuitive result: `TransactionAmt` shows no statistically significant relationship with fraud on its own, yet is the model's single most important SHAP feature — likely an interaction effect, flagged in the report as the top thing to validate on real data.
 
-Full write-up of results: [`reports/findings.md`](reports/findings.md)
+Full analysis in [`reports/report.pdf`](reports/report.pdf) and [`reports/findings.md`](reports/findings.md).
 
----
+## Project structure
 
-## Key Results
+```
+backend/
+├── data/               # raw IEEE-CIS CSVs (not tracked in git)
+├── src/                # data loading, preprocessing, models, cost analysis, SHAP, stats
+├── dashboard/           # Streamlit app
+├── models/              # trained model artifacts (not tracked in git — run train.py)
+├── train.py             # trains and saves all 5 models
+└── cost_analysis.py     # cost-threshold sweep across saved models
+reports/
+├── generate_report.py   # builds the PDF report
+├── report.pdf
+└── findings.md
+```
 
-| Metric | Value |
+## Models compared
+
+| Model | Imbalance handling |
 |---|---|
-| Best model | Random Forest + class weighting |
-| Precision / Recall (default threshold) | 0.336 / 0.878 |
-| PR-AUC | 0.654 |
-| Cost reduction from threshold tuning | Up to ~28% (cost-ratio dependent) |
-| Top predictive features | V14, V4, V12, V11, V10 — confirmed independently by both Mann-Whitney testing and SHAP |
+| Random Forest | SMOTE / class-weighting |
+| XGBoost | SMOTE / class-weighting |
+| Logistic Regression | class-weighting |
 
----
+## Running it
 
-## Tech Stack
+```bash
+pip install -r requirements.txt
 
-- **Data**: pandas, SQL (SQLAlchemy)
-- **Stats**: SciPy (Mann-Whitney U test)
-- **ML**: scikit-learn (Logistic Regression, Random Forest), imbalanced-learn (SMOTE)
-- **Explainability**: SHAP (TreeExplainer)
-- **Visualization / Dashboard**: Plotly, Streamlit
-- **Deployment**: Render
+# 1. Download train_transaction.csv + train_identity.csv from Kaggle
+#    into backend/data/raw/
 
----
+# 2. Train all 5 models (saves to backend/models/)
+python backend/train.py
 
-## Project Structure
+# 3. Launch the dashboard
+streamlit run backend/dashboard/app.py
 
+# 4. Generate the PDF report
+python reports/generate_report.py
 ```
-fraud-detection-analysis/
-├── data/raw/              # creditcard.csv (not committed — see Setup)
-├── notebooks/              # EDA, stats, segmentation exploration
-├── src/
-│   ├── data_loader.py       # load + schema validation
-│   ├── preprocessing.py     # split, scale, SMOTE
-│   ├── stat_tests.py         # Mann-Whitney feature testing
-│   ├── models.py             # Logistic Regression / Random Forest training + evaluation
-│   ├── cost_matrix.py        # cost-based threshold optimization
-│   ├── explainability.py     # SHAP value computation
-│   └── viz.py                 # Plotly chart functions
-├── dashboard/
-│   └── app.py                # Streamlit app — 5 tabs (Overview, Cost, Features, Explain, Live feed)
-├── reports/
-│   └── findings.md            # consolidated results and conclusions
-└── requirements.txt
-```
-
----
 
 ## Dashboard
 
-Five tabs, all driven by live sidebar controls (model choice, threshold, cost assumptions):
+Interactive comparison across all 5 models: live threshold tuning, cost-scenario analysis, SHAP feature importance, per-transaction explanations, and a simulated live transaction feed.
 
-- **Overview** — precision/recall/F1, confusion matrix, live at your chosen threshold
-- **Cost analysis** — editable false-negative/false-positive costs, optimal threshold calculation, cost-vs-threshold curve
-- **Feature insights** — SHAP global importance next to the Mann-Whitney significance table
-- **Explain transaction** — pick any caught fraud case, see exactly which features drove that specific prediction
-- **Live feed** — simulated real-time transaction scoring
+## Tech stack
 
-*(Add 1–2 screenshots here once you're happy with the visual polish)*
+Python · scikit-learn · XGBoost · imbalanced-learn (SMOTE) · SHAP · Streamlit · ReportLab
 
----
+## Limitations
 
-## Setup
-
-```bash
-git clone <your-repo-url>
-cd fraud-detection-analysis
-
-python -m venv venv
-source venv/bin/activate   # venv\Scripts\activate on Windows
-
-pip install -r requirements.txt
-```
-
-Download `creditcard.csv` from [Kaggle](https://www.kaggle.com/mlg-ulb/creditcardfraud) and place it at `data/raw/creditcard.csv`.
-
-Run the dashboard:
-```bash
-streamlit run dashboard/app.py
-```
-
----
-
-## Methodology Notes
-
-- **Data leakage avoided**: scaling and SMOTE are both fit only on training data; the test set is never resampled and stays at its true 0.17% fraud rate for honest evaluation.
-- **PR-AUC over accuracy/ROC-AUC**: with this level of imbalance, accuracy is meaningless (99.83% by predicting "not fraud" always) and ROC-AUC can look misleadingly good. PR-AUC is the primary comparison metric here.
-- **Cost-based thresholding**: the "right" decision threshold isn't 0.5 by default — it depends on the real cost of a missed fraud vs. a false alarm. See `reports/findings.md` for the sensitivity analysis across cost ratios.
-
----
-
-## Data Source
-
-[Kaggle — Credit Card Fraud Detection](https://www.kaggle.com/mlg-ulb/creditcardfraud) (anonymized European cardholder transactions, PCA-transformed features).
+This uses a public dataset, not real transaction data — the findings demonstrate methodology and are not a validated production model. See `reports/report.pdf` for the full discussion of what a real deployment would require.
