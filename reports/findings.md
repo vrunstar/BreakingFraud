@@ -1,75 +1,94 @@
-# Findings — Credit Card Fraud Detection
+# Findings — Credit Card Fraud Detection (IEEE-CIS)
 
 ## Problem
 
-Detect fraudulent credit card transactions in a highly imbalanced dataset (284,807 transactions, 492 fraud — 0.17%). The core challenge throughout this project was that naive approaches (accuracy-optimized models, default thresholds) fail badly on this kind of imbalance, so every stage required imbalance-aware techniques.
+Detect fraudulent transactions in the IEEE-CIS Fraud Detection dataset (590,540 transactions, 20,663 fraud — 3.5%), merged from `train_transaction.csv` and `train_identity.csv` on `TransactionID`. Unlike a typical anonymized fraud benchmark, this dataset was deliberately restricted to a subset of features that are both **deployable** (computable on a live, incoming transaction) and **interpretable** (explainable to a business stakeholder) — excluding Vesta's proprietary, undocumented engineered features (`C1`–`C14`, `V1`–`V339`, most `id_*` columns), which cannot be recomputed outside Vesta's internal pipeline regardless of how predictive they are.
+
+**Features used for modeling (14):** `TransactionAmt`, `card1`–`card6`, `addr1`, `addr2`, `dist1`, `P_emaildomain`, `R_emaildomain`, `DeviceType`, `ProductCD`, and a derived `hour_of_day` feature.
 
 ---
 
-## 1. Statistical Validation (Mann-Whitney U Test)
+## 1. Statistical Validation (Mann-Whitney U + Chi-square)
 
-Before modeling, each feature was tested for whether its distribution genuinely differs between fraud and legitimate transactions, using the Mann-Whitney U test (chosen over a t-test since transaction features are non-normally distributed).
+Numeric features (`TransactionAmt`, `hour_of_day`) were tested with the Mann-Whitney U test; categorical features (`ProductCD`, `card4`, `card6`, `P_emaildomain`, `R_emaildomain`, `DeviceType`) were tested with a chi-square test of independence, since Mann-Whitney doesn't apply to categorical data.
 
-**Top discriminating features (smallest p-values):**
-
-| Rank | Feature | p-value |
+| Feature | Test | p-value |
 |---|---|---|
-| 1 | V14 | 1.47e-260 |
-| 2 | V4 | 3.63e-248 |
-| 3 | V12 | 8.42e-247 |
-| 4 | V11 | 4.91e-226 |
-| 5 | V10 | 9.61e-222 |
+| ProductCD | Chi-square | ~0 |
+| R_emaildomain | Chi-square | ~0 |
+| P_emaildomain | Chi-square | ~0 |
+| card6 | Chi-square | ~0 |
+| DeviceType | Chi-square | ~0 |
+| card4 | Chi-square | 1.45e-78 |
+| hour_of_day | Mann-Whitney U | 1.31e-07 |
+| TransactionAmt | Mann-Whitney U | 0.226 (not significant) |
 
-All top features returned p-values effectively at zero, confirming strong, statistically significant separation between classes — evidence that a predictive model has real signal to learn from, not noise.
+**Key takeaway:** every categorical feature shows an extremely strong statistical association with fraud. `hour_of_day` is significant but weaker. **`TransactionAmt` alone shows no significant relationship with fraud** — a genuinely counterintuitive result, since transaction amount is commonly assumed to be a strong fraud signal. This became an important cross-check against the SHAP results (see Section 4).
 
 ---
 
-## 2. Model Comparison — SMOTE vs Class Weighting
+## 2. Model Comparison — 5 Models, 2 Imbalance Strategies
 
-Two imbalance-handling strategies were tested across two model types (Logistic Regression, Random Forest), evaluated on a held-out, untouched-by-resampling test set.
+Random Forest, XGBoost, and Logistic Regression were trained, with Random Forest and XGBoost each tested under both SMOTE oversampling and class-weighting.
 
 | Model | Precision | Recall | F1 | PR-AUC |
 |---|---|---|---|---|
-| Logistic Regression + SMOTE | 0.058 | 0.918 | 0.109 | **0.725** |
-| Logistic Regression + class weight | 0.061 | 0.918 | 0.114 | 0.716 |
-| Random Forest + SMOTE | 0.214 | 0.888 | 0.345 | 0.708 |
-| **Random Forest + class weight** | **0.336** | 0.878 | **0.486** | 0.654 |
+| **XGBoost + class weight** | 0.121 | **0.693** | 0.206 | **0.246** |
+| XGBoost + SMOTE | **0.181** | 0.487 | **0.264** | 0.214 |
+| Random Forest + class weight | 0.090 | 0.582 | 0.155 | 0.160 |
+| Random Forest + SMOTE | 0.092 | 0.603 | 0.160 | 0.158 |
+| Logistic Regression + class weight | 0.090 | 0.632 | 0.157 | 0.145 |
 
 **Key takeaways:**
-- Logistic Regression achieves the highest recall and PR-AUC, but at unusable precision (~6%) — over 1,300 false alarms per ~90 fraud cases caught. Not production-viable as-is.
-- Random Forest + class weighting gives the best precision/recall balance (F1 = 0.486) and the fewest false positives (170), making it the strongest default candidate.
-- **Class weighting outperformed SMOTE on precision for both model types at their default thresholds** — a real, dataset-specific finding, not a universal rule.
-- PR-AUC and F1 don't always agree on model quality: PR-AUC reflects performance *across all thresholds*, while F1 is a snapshot at one threshold. Logistic Regression's high PR-AUC suggests untapped potential that a better threshold could unlock.
+- **XGBoost beats Random Forest across every metric** — consistent with gradient boosting's typical edge on structured, imbalanced tabular data.
+- XGBoost + class weight has the best PR-AUC; XGBoost + SMOTE has the best F1 — a genuine tradeoff between catching more fraud (higher recall) vs. being more confident when it does flag something (higher precision).
+- These PR-AUC scores (~0.15–0.25) are meaningfully lower than typical IEEE-CIS leaderboard results (~0.7+). This is expected and intentional: it's the measurable cost of restricting the model to deployable, explainable features instead of Vesta's full opaque feature set (see Problem section).
 
 ---
 
 ## 3. Cost-Based Threshold Optimization
 
-Rather than accepting the default 0.5 decision threshold, thresholds were swept and evaluated against assumed real-world costs: a missed fraud (false negative) vs. a false alarm (false positive).
+Thresholds were swept and evaluated against three different assumed cost scenarios (false negative cost = missed fraud, false positive cost = false alarm), to test whether the model recommendation is robust or scenario-dependent.
 
-| FN:FP cost ratio | Optimal threshold | Cost at 0.5 | Cost at optimal | Savings |
-|---|---|---|---|---|
-| 100:1 (₹5,000 / ₹50) | 0.47 | ₹68,500 | ₹65,650 | ~4% |
-| 400:1 (₹10,000 / ₹25) | 0.30 | ₹124,250 | ₹99,875 | ~20% |
-| ~1000:1+ | 0.22 | ₹304,250 | ₹217,775 | ~28% |
+| Scenario | FN:FP cost | XGBoost (class wt) optimal threshold | Cost at optimal |
+|---|---|---|---|
+| 1 | ₹5,000 : ₹50 | 0.26 | ₹4,701,700 |
+| 2 | ₹25,000 : ₹125 | 0.20 | ₹13,308,500 |
+| 3 | ₹10,000 : ₹500 | 0.54 | ₹22,896,000 |
 
-**Key takeaway:** the "correct" decision threshold is not a fixed model property — it depends entirely on the business's cost assumptions. As the relative cost of missing fraud increases, the optimal threshold moves lower (the model should flag more aggressively), and the savings from tuning the threshold instead of using a default grow substantially. This is implemented as a live, adjustable control in the dashboard.
+**XGBoost + class weight was the lowest-cost model in all three scenarios** — beating the next-best model by ₹524K–₹1.98M depending on scenario. In Scenario 1, it saved ~14% (₹785,350) over the worst-performing model (Logistic Regression).
+
+**Key takeaway:** the optimal threshold shifts meaningfully across scenarios (0.20–0.54) — always well below the naive default of 0.5, and rising as the relative cost of false alarms increases (Scenario 3). Both effects are economically consistent, which supports confidence in the cost model itself, not just the resulting model recommendation. This is implemented as a live, adjustable control in the dashboard.
 
 ---
 
 ## 4. Explainability (SHAP)
 
-SHAP (TreeExplainer) was used to explain both global model behavior and individual predictions from the Random Forest model.
+SHAP (TreeExplainer) was used on the recommended model (XGBoost + class weight) to explain both global feature importance and individual predictions.
 
-**Global importance** closely mirrored the statistical test results: `V14`, `V4`, `V10`, `V12`, `V11` ranked as the top contributors in both methods — independent confirmation from a classical statistical test and a modern explainability technique.
+**Top features by mean absolute SHAP value:**
 
-**Individual case example:** for one caught fraud transaction, the model moved from a 50.2% baseline to a 99.8% fraud prediction, driven primarily by `V14` (+0.13), `V10` (+0.09), and `V17`/`V4`/`V12` (+0.06 each) — a fully traceable, auditable explanation for the decision.
+| Rank | Feature | SHAP importance |
+|---|---|---|
+| 1 | TransactionAmt | 0.326 |
+| 2 | card6 (credit) | 0.291 |
+| 3 | ProductCD (C) | 0.257 |
+| 4 | R_emaildomain (Unknown) | 0.215 |
+| 5 | card3 | 0.199 |
+| 6 | R_emaildomain (gmail.com) | 0.194 |
+
+**Strong agreement with statistical testing:** `card6`, `ProductCD`, `R_emaildomain`, and `DeviceType` rank highly by both SHAP importance and statistical significance — independent confirmation across two different methods that these features carry genuine fraud signal.
+
+**A discrepancy worth flagging:** `TransactionAmt` is the single most important SHAP feature, despite showing *no* statistically significant relationship with fraud on its own (Section 1, p = 0.226). This most likely reflects an interaction effect — amount matters in combination with other features (e.g. unusual for a given product category) rather than on its own, which SHAP can capture but a simple two-group statistical test cannot. It's also a plausible sign of overfitting, and is flagged as the top validation priority if this model is ever retrained on real transaction data.
+
+Several anonymized identifier columns (`card1`, `card2`, `card3`) also rank highly despite carrying no human-readable meaning — a direct illustration of the interpretability-vs-accuracy tradeoff: the model benefits from these deployable-but-opaque features even though individual predictions involving them can't be fully explained in plain language.
 
 ---
 
 ## 5. Overall Conclusion
 
-- **Recommended model:** Random Forest + class weighting, threshold tuned to the business's actual cost assumptions rather than left at 0.5.
-- **Recommended process:** don't optimize for accuracy or even F1 alone on imbalanced problems — use PR-AUC to compare models, and a cost matrix to pick the final operating threshold.
-- **Explainability isn't optional** for a fraud system deployed in practice — SHAP provides the "why" behind each flag, which both statistical testing and global importance independently corroborate.
+- **Recommended model:** XGBoost with class weighting — the only model that was cost-optimal across all three tested business scenarios, not just the highest-PR-AUC model in isolation.
+- **Recommended threshold:** business-dependent — use the dashboard's live threshold slider with real cost assumptions rather than a fixed default.
+- **Recommended process:** evaluate with PR-AUC (not accuracy) given the class imbalance, test the model recommendation against multiple cost scenarios rather than a single assumption, and validate SHAP-reported importance against independent statistical tests before trusting a feature's apparent importance.
+- **Explainability caveat:** the model's top feature (`TransactionAmt`) lacks independent statistical support — a genuine limitation to disclose, not a result to present without qualification. This is the single most important thing to re-validate if this pipeline is ever retrained on real transaction data.
 - All of the above is explorable interactively in the accompanying Streamlit dashboard (model switch, threshold slider, live cost recalculation, SHAP breakdowns).

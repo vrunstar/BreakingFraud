@@ -1,7 +1,11 @@
-data/raw/
-data/processed/
-venv/
+backend/data/raw/
+backend/data/processed/
+.venv/
 __pycache__/
 *.pyc
 .env
 .DS_Store
+test.py
+reports/**/*.png
+*.pkl
+reports/*.pdf

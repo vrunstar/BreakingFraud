@@ -1,27 +1,26 @@
-from src.data_loader import load_raw_data
-from src.preprocessing import split_data, scale_features
-from src.models import train_random_forest
-from src.explainability import get_shap_values, plot_global_importance, explain_single_prediction
+import joblib
 import numpy as np
 import pandas as pd
+import shap
+from pathlib import Path
 
-df = load_raw_data()
-X_train, X_test, y_train, y_test = split_data(df)
-X_train_scaled, X_test_scaled, scaler = scale_features(X_train, X_test)
+MODEL_DIR = Path("backend/models")
 
-model4 = train_random_forest(X_train_scaled, y_train, class_weight='balanced')
+model = joblib.load(MODEL_DIR / "xgb_class.pkl")
+X_test_scaled = joblib.load(MODEL_DIR / "X_test_scaled.pkl")
+y_test = joblib.load(MODEL_DIR / "y_test.pkl")
 
 fraud_rows = X_test_scaled[y_test == 1]
-legit_sample = X_test_scaled[y_test == 0].sample(900, random_state=42)
-
+legit_rows = X_test_scaled[y_test == 0]
+legit_sample = legit_rows.sample(min(900, len(legit_rows)), random_state=42)
 X_sample = pd.concat([fraud_rows, legit_sample])
-y_sample = y_test.loc[X_sample.index]
 
-explainer, shap_values = get_shap_values(model4, X_sample)
+explainer = shap.TreeExplainer(model)
+shap_values = explainer.shap_values(X_sample)
+shap_fraud = shap_values[:, :, 1] if np.ndim(shap_values) == 3 else shap_values
 
-# Find an actual fraud case in the sample
-fraud_indices = np.where(y_sample.values == 1)[0]
-print(f"Found {len(fraud_indices)} fraud cases in this sample")
+mean_abs = np.abs(shap_fraud).mean(axis=0)
+order = np.argsort(mean_abs)[::-1][:15]
 
-if len(fraud_indices) > 0:
-    explain_single_prediction(explainer, shap_values, X_sample, index=fraud_indices[0])
+for i in order:
+    print(f"{X_sample.columns[i]:35s} {mean_abs[i]:.4f}")

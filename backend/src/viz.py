@@ -11,7 +11,8 @@ BASE_LAYOUT = dict(
     template="plotly_dark",
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
-    font=dict(family="sans-serif", size=13),
+    font=dict(family="Inter, sans-serif", size=13),
+    title_font=dict(family="Anton, sans-serif", size=18),
     margin=dict(l=10, r=10, t=45, b=10),
 )
 
@@ -25,7 +26,7 @@ def plot_confusion_matrix(cm):
         y=labels,
         text=cm,
         texttemplate="%{text}",
-        textfont={"size": 16},
+        textfont={"size": 20, "family": "Anton, sans-serif"},
         colorscale=[[0, "#1a2f4a"], [1, ACCENT_BLUE]],
         showscale=False,
     ))
@@ -124,13 +125,13 @@ def plot_feature_test_table(results_df, top_n=10):
 
     fig = go.Figure(data=[go.Table(
         header=dict(
-            values=["Feature", "Statistic", "p-value"],
+            values=["Feature", "Test", "Statistic", "p-value"],
             align="left",
             fill_color=TABLE_HEADER,
             font=dict(size=13, color="white"),
         ),
         cells=dict(
-            values=[top["feature"], top["statistic"].round(1),
+            values=[top["feature"], top["test"], top["statistic"].round(2),
                     top["p_value"].apply(lambda x: f"{x:.2e}")],
             align="left",
             height=28,
@@ -138,6 +139,13 @@ def plot_feature_test_table(results_df, top_n=10):
             font=dict(color="white"),
         ),
     )])
+
+    fig.update_layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        height=380,
+        margin=dict(l=0, r=0, t=10, b=0),
+    )
+    return fig
 
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
